@@ -1,100 +1,138 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import PropTypes from 'prop-types';
 
-const App = () => {
-  const [name, setName] = useState("");
-  const [castles, setCastles] = useState(Array(8).fill(null));
-  const [scores, setScores] = useState({});
+// Component cho mỗi client
+const App = ({ clientId }) => {
+  const [player, setPlayer] = useState(null);
+  const [castles, setCastles] = useState(Array(30).fill(null));
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [clientSize, setClientSize] = useState(0);
   const [ws, setWs] = useState(null);
-  const [elapsedTime, setElapsedTime] = useState(Array(8).fill(0)); // Thời gian chiếm giữ cho mỗi lâu đài
+  const intervalRef = useRef(null);
 
   useEffect(() => {
-    const socket = new WebSocket("ws://localhost:3001");
+    const socket = new WebSocket("ws://localhost:3001", ["VALID_TOKEN"]);
     setWs(socket);
 
-    socket.onopen = () => console.log("Connected to server");
+    socket.onopen = () => {
+      console.log(`Client ${clientId}: Connected to server`);
+      intervalRef.current = setInterval(() => {
+        setCurrentTime(prev => prev + 1000);
+      }, 1000);
+    };
 
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "init") {
-        setName(message.name);
+        setPlayer(message.player);
         setCastles(message.castles);
-        setScores(message.scores);
-        setElapsedTime(
-          message.castles.map((castle) =>
-            castle ? Math.floor((Date.now() - castle.startTime) / 1000) : 0
-          )
-        );
+        setCurrentTime(message.currentTime);
+        setClientSize(message.clients);
       } else if (message.type === "update") {
         setCastles(message.castles);
-        setScores(message.scores);
-
-        // Cập nhật thời gian chiếm giữ
-        setElapsedTime(() =>
-          message.castles.map((castle) =>
-            castle ? (Math.floor((Date.now() - castle.startTime) / 1000)) : 0
-          )
-        );
-        console.log(message.castles);
-        console.log(elapsedTime);
+        setCurrentTime(message.currentTime);
+        setClientSize(message.clients);
       }
     };
 
-    socket.onclose = () => console.log("Disconnected from server");
+    socket.onclose = () => {
+      console.log(`Client ${clientId}: Disconnected from server`);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      setCurrentTime(0);
+      setCastles(Array(30).fill(null));
+    };
 
-    return () => socket.close();
-  }, []);
-
-  // Cập nhật thời gian hiển thị trên client mỗi giây
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setElapsedTime((prev) =>
-        prev.map((time, index) =>
-          castles[index]?.owner && castles[index]?.owner === name
-            ? time + 1
-            : time
-        )
-      );
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [castles, name]);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      socket.close();
+    };
+  }, [clientId]);
 
   const handleClaim = (index) => {
     ws.send(JSON.stringify({ type: "claim", index }));
   };
 
+  const calculateScore = (castle) => {
+    if (!castle) {
+      return 0;
+    };
+    const elapsedTime = Math.floor((currentTime - castle.startTime) / 1000);
+    return elapsedTime;
+  };
+
+  const calculateCastlesOwned = () => {
+    const castlesOwned = castles.filter((castle) => castle?.owner === player?.name);
+    if (castlesOwned.length === 0 && ws?.readyState === 1) {
+      ws.close();
+      alert(`Game over for ${player?.name}`);
+      return 0;
+    }
+    return castlesOwned.length;
+  };
+
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center min-h-screen">
-        <div className="text-xl font-bold border-2 border-gray-300 rounded-lg p-2 w-1/4 items-center justify-center flex mr-4 h-40">
-          Player: {name}
+      <div className="flex justify-between items-center gap-4">
+        <div
+          className="text-xl font-bold border-2 rounded-lg p-4 w-1/4 flex flex-col items-center"
+          style={{ backgroundColor: player?.color }}
+        >
+          <div className="text-white">Player</div>
+          <div className="text-white">{ws?.readyState === 1 ? "Online" : "Offline"}</div>
         </div>
-        <div className="grid grid-cols-4 gap-4 mt-4 w-full">
+
+        <div className="grid grid-cols-5 gap-4 w-full">
           {castles.map((castle, index) => (
             <button
               key={index}
-              className={`h-20 rounded-lg ${castle ? "bg-blue-500 text-white" : "bg-green-500 text-transparent"
-                }`}
+              className={`h-20 rounded-lg flex items-center justify-center`}
+              style={{
+                backgroundColor: castle ? castle.ownerColor : "#ffffff",
+                color: castle ? "#ffffff" : "#000000",
+                border: "2px solid #e2e8f0"
+              }}
               onClick={() => handleClaim(index)}
-              disabled={castle?.owner === name}
+              disabled={castle?.owner === player?.name}
             >
-              {castle ? (
-                <div>
-                  <div>{castle.owner}</div>
-                  <div className="text-sm">{elapsedTime[index]}s</div>
-                </div>
-              ) : (
-                ""
-              )}
+              {castle ? `${calculateScore(castle)}s` : ""}
             </button>
           ))}
         </div>
-        <div className="text-xl font-bold border-2 border-gray-300 rounded-lg p-2 w-1/4 items-center justify-center flex ml-4 h-40">
-          Score: {scores[name] || 0}
+
+        <div className="text-xl font-bold border-2 rounded-lg p-4 w-1/4 flex flex-col items-center">
+          <div>Score: {castles.filter(c => c?.owner === player?.name).reduce((sum, c) => sum + calculateScore(c), 0)}</div>
+          <div>Players: {clientSize}</div>
+          <div>Castles: {calculateCastlesOwned()}</div>
         </div>
       </div>
     </div>
   );
 };
 
-export default App;
+// Add prop type validation
+App.propTypes = {
+  clientId: PropTypes.number.isRequired,
+};
+
+// Component chính để quản lý nhiều client
+const MultiClientApp = () => {
+  const clientCount = 10; // Ví dụ có 3 client trên một trang
+
+  return (
+    <div className="grid grid-cols-3 gap-10">
+      {Array.from({ length: clientCount }).map((_, index) => (
+        <div className="border-2 rounded-lg p-4" key={index}>
+          <App clientId={index + 1} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
+export default MultiClientApp;
